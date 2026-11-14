@@ -1,0 +1,112 @@
+// Zoho CRM > Setup > Developer Hub > Functions > Nouvelle fonction > catégorie « Standalone »
+// Nom : ekko_rdv        Argument : crmAPIRequest (type String)
+// Rôle : (1) renvoie les réunions déjà prévues, (2) crée le prospect + la réunion.
+
+raw = crmAPIRequest.get("body");
+payload = Map();
+if(raw != null)
+{
+	payload = raw.toString().toMap();
+}
+action = payload.get("action");
+result = Map();
+code = 200;
+
+if(action == "busy")
+{
+	// Réunions du CRM qui commencent dans la plage demandée
+	crit = "(Start_DateTime:between:" + payload.get("from") + "," + payload.get("to") + ")";
+	events = zoho.crm.searchRecords("Events",crit);
+	busy = List();
+	if(events.toString() != "" && events.toString() != "null")
+	{
+		for each  ev in events
+		{
+			if(ev.get("Start_DateTime") != null && ev.get("End_DateTime") != null)
+			{
+				item = Map();
+				item.put("start",ev.get("Start_DateTime").toString());
+				item.put("end",ev.get("End_DateTime").toString());
+				busy.add(item);
+			}
+		}
+	}
+	result.put("busy",busy);
+}
+else if(action == "create")
+{
+	email = payload.get("email");
+	nom = payload.get("nom");
+	prenom = ifnull(payload.get("prenom"),"");
+	duree = payload.get("duree");
+	// 1) retrouver le contact ou le prospect, sinon créer un prospect
+	whoId = null;
+	whoModule = "Leads";
+	found = zoho.crm.searchRecords("Contacts","(Email:equals:" + email + ")");
+	if(found.size() > 0)
+	{
+		whoId = found.get(0).get("id");
+		whoModule = "Contacts";
+	}
+	else
+	{
+		found = zoho.crm.searchRecords("Leads","(Email:equals:" + email + ")");
+		if(found.size() > 0)
+		{
+			whoId = found.get(0).get("id");
+		}
+		else
+		{
+			lead = Map();
+			lead.put("Last_Name",nom);
+			lead.put("First_Name",prenom);
+			lead.put("Email",email);
+			lead.put("Phone",payload.get("tel"));
+			lead.put("Company","Particulier");
+			lead.put("Lead_Source","Site Web");
+			lead.put("Description","Demande de visio de " + duree + " min depuis le site.\n" + payload.get("message"));
+			created = zoho.crm.createRecord("Leads",lead);
+			whoId = created.get("id");
+		}
+	}
+	// 2) créer la réunion
+	ev = Map();
+	ev.put("Event_Title","Visio " + duree + " min – " + prenom + " " + nom);
+	ev.put("Start_DateTime",payload.get("start"));
+	ev.put("End_DateTime",payload.get("end"));
+	ev.put("Venue","Visio");
+	ev.put("Description",ifnull(payload.get("message"),"") + "\nE-mail : " + email + "\nTéléphone : " + ifnull(payload.get("tel"),""));
+	if(whoId != null)
+	{
+		ev.put("Who_Id",whoId);
+		ev.put("$se_module",whoModule);
+	}
+	evRes = zoho.crm.createRecord("Events",ev);
+	// 3) e-mails de confirmation (l'expéditeur doit être ton adresse d'administratrice)
+	sendmail
+	[
+		from :zoho.adminuserid
+		to :email
+		subject :"Votre visio avec Julie Meri (Ekko) est confirmée"
+		message :"Bonjour " + prenom + ",<br><br>Votre visio de " + duree + " minutes est confirmée : " + payload.get("start").toString().left(16).replaceAll("T"," à ") + ".<br>Je vous envoie le lien de connexion avant le rendez-vous.<br><br>Julie Meri · Ekko"
+	]
+	sendmail
+	[
+		from :zoho.adminuserid
+		to :zoho.adminuserid
+		subject :"Nouvelle visio réservée : " + prenom + " " + nom
+		message :"Créneau : " + payload.get("start") + " (" + duree + " min)<br>E-mail : " + email + "<br>" + ifnull(payload.get("message"),"")
+	]
+	result.put("ok",true);
+}
+else
+{
+	result.put("error","action inconnue");
+	code = 400;
+}
+
+response = Map();
+response.put("status_code",code);
+response.put("content-type","application/json;charset=utf-8");
+response.put("body",result.toString());
+return {"crmAPIResponse":response};
